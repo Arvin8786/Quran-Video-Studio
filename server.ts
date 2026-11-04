@@ -24,6 +24,10 @@ const DATA_DIR = path.join(process.cwd(), '.data');
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
+const DEFAULT_BG_PATH = path.join(DATA_DIR, 'default_bg.mp4');
+if (!fs.existsSync(DEFAULT_BG_PATH)) {
+  downloadFile('https://videos.pexels.com/video-files/5535406/5535406-hd_1920_1080_30fps.mp4', DEFAULT_BG_PATH).catch(() => {});
+}
 const SESSIONS_FILE = path.join(DATA_DIR, 'social_sessions.json');
 const HISTORY_FILE = path.join(DATA_DIR, 'publish_history.json');
 
@@ -916,7 +920,7 @@ app.post('/api/render-video', async (req: Request, res: Response) => {
 
     // 1. Resolve Background Video
     let videoReady = false;
-    if (videoUrl && typeof videoUrl === 'string' && (videoUrl.startsWith('http://') || videoUrl.startsWith('https://'))) {
+    if (videoUrl && typeof videoUrl === 'string' && !videoUrl.startsWith('blob:') && (videoUrl.startsWith('http://') || videoUrl.startsWith('https://'))) {
       try {
         await downloadFile(videoUrl, bgPath);
         if (fs.existsSync(bgPath) && fs.statSync(bgPath).size > 50000) {
@@ -928,13 +932,35 @@ app.post('/api/render-video', async (req: Request, res: Response) => {
     }
 
     if (!videoReady) {
-      if (fs.existsSync(localFallback)) {
+      if (fs.existsSync(localFallback) && fs.statSync(localFallback).size > 50000) {
         fs.copyFileSync(localFallback, bgPath);
         videoReady = true;
       } else {
         const defaultVideo = 'https://videos.pexels.com/video-files/5535406/5535406-hd_1920_1080_30fps.mp4';
-        await downloadFile(defaultVideo, bgPath);
+        try {
+          await downloadFile(defaultVideo, bgPath);
+          if (fs.existsSync(bgPath) && fs.statSync(bgPath).size > 50000) {
+            videoReady = true;
+            try { fs.copyFileSync(bgPath, localFallback); } catch(e){}
+          }
+        } catch(e) {}
       }
+    }
+
+    if (!videoReady) {
+      try {
+        await execFileAsync('ffmpeg', [
+          '-y',
+          '-f', 'lavfi',
+          '-i', 'color=c=black:s=1920x1080:r=30:d=15',
+          '-c:v', 'libx264',
+          '-preset', 'ultrafast',
+          bgPath
+        ]);
+        if (fs.existsSync(bgPath) && fs.statSync(bgPath).size > 5000) {
+          videoReady = true;
+        }
+      } catch(e) {}
     }
 
     // 2. Resolve Audio Tracks
