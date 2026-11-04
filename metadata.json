@@ -1,0 +1,6 @@
+{
+  "name": "ProEase Studio - Quran Video & Natural Scene Creator",
+  "description": "Create 16:9 landscape Quran recitation videos of entire surahs, 9:16 portrait awareness shorts with 365 days of lessons, animated series loops, and nature scenes with synchronized audio.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
