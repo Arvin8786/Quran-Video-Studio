@@ -1,8 +1,2 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
-export default function App() {
-  return <div></div>;
-}
+/** Quran Studio's application entry point. */
+export {default} from './Studio.jsx';
