@@ -117,3 +117,9 @@ test('Malformed platform IDs are never counted as a confirmed upload',async()=>{
   const h=await harness({fetch:()=>Response.json({id:{malformed:true}})});
   const result=await h.publish('facebook');assert.equal(result.body.success,false);assert.equal(result.body.uncertain,true);assert.equal(h.store.history.length,0);
 });
+test('A malformed final response cannot be retried as a new upload',async()=>{
+ for(const provider of ['youtube','facebook']){
+  const h=await harness({fetch:(_url,request)=>provider==='youtube'&&request.method==='POST'?new Response('',{headers:{location:'https://upload.example/video'}}):Response.json(null)});
+  assert.equal((await h.publish(provider)).body.uncertain,true);await h.publish(provider);assert.equal(h.store.calls.length,provider==='youtube'?2:1);assert.equal(h.store.history.length,0);
+ }
+});

@@ -64,6 +64,7 @@ export function createPublisher({
       } catch {
         data = {};
       }
+      if (!data || typeof data !== 'object' || Array.isArray(data)) data = {};
       return {
         response,
         data
