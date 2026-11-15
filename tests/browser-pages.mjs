@@ -59,6 +59,10 @@ try{
  await send('Page.navigate',{url:origin+prefix});
  await until(()=>contains('Ready: THE REALITY OF DEATH'),'Bundled lesson did not load from project path');
  assert.equal(await evaluate("document.querySelector('[aria-label=\"Render engine\"]').value"),'browser');
+ await click('Connect');await until(()=>contains('Set up your publishing server'),'An unconfigured channel did not lead to service setup');
+ await setInput('Service URL','https://arvin8786.github.io/auth/callback');await click('Save connection');await until(()=>contains('This is a GitHub Pages address'),'A Pages callback was accepted as the publishing service');
+ assert.equal(await evaluate("document.querySelector('a[href*=\"render.com/deploy\"]')?.textContent.includes('Deploy on Render')"),true);
+ await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape'});
  await click('Full Surahs');await until(()=>contains('Ready: Al-Fatihah'),'Complete Surah did not load');
  assert.equal(await evaluate("document.querySelector('[aria-label=\"Choose a Surah\"]').options.length"),115);
  assert.equal(await contains('7 verses'),true);
