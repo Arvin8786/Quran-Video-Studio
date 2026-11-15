@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: quran-studio-publishing
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/health
+    disk:
+      name: studio-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: STUDIO_ACCESS_KEY
+        generateValue: true
+      - key: STUDIO_ALLOWED_ORIGINS
+        value: https://arvin8786.github.io
+      - key: PROEASE_DATA_DIR
+        value: /data
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: META_APP_ID
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: TIKTOK_CLIENT_KEY
+        sync: false
+      - key: TIKTOK_CLIENT_SECRET
+        sync: false
