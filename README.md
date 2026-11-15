@@ -20,7 +20,9 @@ Direct publishing from the Pages interface needs a separate private Node service
 
 The included `Dockerfile` installs FFmpeg and runs the Express app. `render.yaml` is a Render blueprint with persistent private storage. **Its Starter instance and disk are paid Render resources; deploying the blueprint requires your Render account and billing approval.** You can host the Docker image on another service with persistent storage instead.
 
-1. Deploy the service from this repository. Set a strong `STUDIO_ACCESS_KEY`, `STUDIO_ALLOWED_ORIGINS=https://arvin8786.github.io`, and a persistent `PROEASE_DATA_DIR`. The Render blueprint generates the key and uses `/data`. `APP_URL` must be the public HTTPS service origin; on Render it is detected automatically.
+1. [Deploy the prepared service on Render](https://render.com/deploy?repo=https%3A%2F%2Fgithub.com%2FArvin8786%2FQuran-Video-Studio), or deploy the Docker image on your own host. Set a strong `STUDIO_ACCESS_KEY`, `STUDIO_ALLOWED_ORIGINS=https://arvin8786.github.io`, and a persistent `PROEASE_DATA_DIR`. The Render blueprint generates the key and uses `/data`. `APP_URL` must be the public HTTPS service origin; on Render it is detected automatically.
+   The service URL is its server origin, such as `https://your-studio.onrender.com`. A GitHub Pages URL or `/auth/callback` URL is not a service origin. Do not register the GitHub Pages address as this app’s OAuth callback.
+
 2. Add credentials only for platforms you want to use (see `.env.example`). In each provider's developer console, register `https://YOUR-SERVICE/auth/callback` as the exact OAuth redirect URL.
 3. In the GitHub Pages app, open **Publishing service settings**. Enter the service's HTTPS origin and Studio access key, then **Save connection**. The URL persists on the device; the key stays in the browser tab's session. An optional public GitHub repository variable `VITE_API_BASE_URL` can prefill the origin for future builds.
 4. Open **Social Accounts → Connect account**. Use **OAuth sign-in**, or verify a suitable OAuth access token. API keys cannot authorize uploads.
