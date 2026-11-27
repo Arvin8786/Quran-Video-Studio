@@ -412,7 +412,11 @@ function fetchStream(targetUrl: string, req: Request, res: Response, redirects =
   }
   try {
     const parsed = new URL(targetUrl);
-    const client = parsed.protocol === 'https:' ? https : http;
+    if (parsed.protocol !== 'https:' || !/^(?:www\.)?everyayah\.com$/i.test(parsed.hostname)) {
+      res.statusCode = 403;
+      return res.end('Only EveryAyah recitation audio can be proxied');
+    }
+    const client = https;
     const reqHeaders: Record<string, string> = {
       'User-Agent':
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -451,6 +455,9 @@ function fetchStream(targetUrl: string, req: Request, res: Response, redirects =
         remoteRes.pipe(res);
       }
     );
+    // Stop the upstream transfer if it stalls or the browser goes away.
+    remoteReq.setTimeout(20000, () => remoteReq.destroy(new Error('Recitation audio timed out')));
+    res.on('close', () => { if (!res.writableEnded) remoteReq.destroy(); });
     remoteReq.on('error', (err) => {
       if (!res.headersSent) {
         res.statusCode = 500;
@@ -478,9 +485,16 @@ async function downloadFile(url: string, dest: string, timeoutMs = 20000, redire
         return;
       }
       if (response.statusCode !== 200) { response.resume(); reject(new Error(`Media server returned ${response.statusCode}`)); return; }
+      // Restart the stall timer while bytes keep arriving, so large HD backgrounds can finish.
+      response.on('data', armTimer);
       pipeline(response, fs.createWriteStream(dest)).then(resolve, reject);
     });
-    const timer = setTimeout(() => request.destroy(new Error('Media download timed out. Please retry or upload a local background.')), timeoutMs);
+    let timer: ReturnType<typeof setTimeout>;
+    function armTimer() {
+      clearTimeout(timer);
+      timer = setTimeout(() => request.destroy(new Error('Media download timed out. Please retry or upload a local background.')), timeoutMs);
+    }
+    armTimer();
     request.on('error', reject);
     request.on('close', () => clearTimeout(timer));
   }).catch(error => { try { fs.rmSync(dest, { force: true }); } catch {} throw error; });
@@ -518,6 +532,9 @@ const RECITER_FOLDERS: Record<string, string> = {
   'ar.mahermuaiqly': 'Maher_AlMuaiqly_64kbps',
   'Maher_AlMuaiqly_64kbps': 'Maher_AlMuaiqly_64kbps'
 };
+// The service only fetches media it actually needs, so it cannot be used to reach internal hosts.
+const RECITATION_URL = /^https:\/\/(?:www\.)?everyayah\.com\/data\/[A-Za-z0-9_.-]+\/\d{6}\.mp3$/;
+const SCENERY_URL = /^https:\/\/(?:[a-z0-9-]+\.)*(?:pexels\.com|vimeo\.com|vimeocdn\.com)\/[^\s]*$/i;
 
 app.post('/api/render-video', async (req: Request, res: Response) => {
   const {
@@ -544,6 +561,12 @@ app.post('/api/render-video', async (req: Request, res: Response) => {
   }
   if (!['nature', 'reflection'].includes(mode) && !RECITER_FOLDERS[reciterFolder]) {
     return res.status(400).json({ error: 'Choose a supported reciter.' });
+  }
+  if (audioUrls.some((url: unknown) => typeof url !== 'string' || !RECITATION_URL.test(url))) {
+    return res.status(400).json({ error: 'Recitation audio must come from EveryAyah. Reload the verses and try again.' });
+  }
+  if (typeof videoUrl === 'string' && /^https?:/i.test(videoUrl) && !SCENERY_URL.test(videoUrl)) {
+    return res.status(400).json({ error: 'This background link is not supported. Choose a preset or Pexels video, or upload a file.' });
   }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proease-'));
@@ -729,9 +752,12 @@ app.options('/api/proxy', (_req: Request, res: Response) => {
 });
 
 app.get('/api/proxy', (req: Request, res: Response) => {
-  const queryUrl = req.query.url as string;
-  if (!queryUrl) {
+  const queryUrl = req.query.url;
+  if (typeof queryUrl !== 'string' || !queryUrl) {
     return res.status(400).end('Missing url param');
+  }
+  if (!RECITATION_URL.test(queryUrl)) {
+    return res.status(403).end('Only EveryAyah recitation audio can be proxied');
   }
   fetchStream(queryUrl, req, res);
 });
@@ -766,7 +792,8 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[ProEase Studio Server] Active on port ${PORT}`);
-    console.log(`[OAuth Callback URI] ${process.env.APP_URL ? process.env.APP_URL.replace(/\/+$/, '') + '/auth/callback' : `http://localhost:${PORT}/auth/callback`}`);
+    const publicUrl = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL;
+    console.log(`[OAuth Callback URI] ${publicUrl ? publicUrl.replace(/\/+$/, '') + '/auth/callback' : `http://localhost:${PORT}/auth/callback`}`);
   });
 }
 

@@ -43,7 +43,7 @@ Completed videos retain their own captions when you change the editor. Retries s
 
 Social uploads support files up to **70 MB**. Larger completed videos can still be downloaded in full and uploaded through the platform's own interface. Publication operation IDs and duplicate-request protection last 24 hours in the running process; this is not a durable queue. After a service restart or an expired operation, check your account before repeating a post.
 
-This is a single-owner studio. All service account APIs and publishing operations require the private Studio key in production. CORS permits only the configured origins. Sessions/history use private files in `.data/` or `PROEASE_DATA_DIR`; neither is committed. Keep the service and key private to people allowed to post to your accounts.
+This is a single-owner studio. All service account APIs and publishing operations require the private Studio key in production. CORS permits only the configured origins. Sessions/history use private files in `.data/` or `PROEASE_DATA_DIR`; neither is committed. Keep the service and key private to people allowed to post to your accounts. The service only downloads recitation audio from EveryAyah and scenery from Pexels/Vimeo links; other remote URLs are refused, so it cannot be used as an open proxy.
 
 ## Local development and validation
 

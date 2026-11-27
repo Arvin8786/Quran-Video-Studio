@@ -47,7 +47,7 @@ function pixel(file, time, x, y) {
 test('MP4 export preserves uploaded scenery, timed verse overlays, speed, dimensions and audio', { timeout: 30000 }, async () => {
   fixtures();
   const result = await render({ mode: 'lessons', aspectRatio: '9:16', processingSpeed: 1.5,
-    videoDataUrl: dataUrl('background.mp4', 'video/mp4'), audioUrls: ['https://fixture/1.mp3', 'https://fixture/2.mp3'],
+    videoDataUrl: dataUrl('background.mp4', 'video/mp4'), audioUrls: ['https://everyayah.com/data/Husary_128kbps/001001.mp3', 'https://everyayah.com/data/Husary_128kbps/001002.mp3'],
     overlays: [dataUrl('red.png', 'image/png'), dataUrl('green.png', 'image/png')] });
   assert.equal(result.status, 200, JSON.stringify(result.result));
   assert.ok(result.output.length > 1000);
@@ -64,7 +64,7 @@ test('MP4 export preserves uploaded scenery, timed verse overlays, speed, dimens
 
 test('Landscape export produces a playable 1920×1080 video', { timeout: 20000 }, async () => {
   fixtures();
-  const result = await render({ mode: 'quran', aspectRatio: '16:9', videoDataUrl: dataUrl('background.mp4', 'video/mp4'), audioUrls: ['https://fixture/1.mp3'] });
+  const result = await render({ mode: 'quran', aspectRatio: '16:9', videoDataUrl: dataUrl('background.mp4', 'video/mp4'), audioUrls: ['https://everyayah.com/data/Husary_128kbps/001001.mp3'] });
   assert.equal(result.status, 200, JSON.stringify(result.result));
   const file = path.join(fixtureDir, 'landscape.mp4'); fs.writeFileSync(file, result.output);
   const probe = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_streams', '-of', 'json', file]));
@@ -74,11 +74,13 @@ test('Landscape export produces a playable 1920×1080 video', { timeout: 20000 }
 
 test('Invalid render settings and unavailable recitation never produce a misleading video', async () => {
   fixtures();
-  for (const body of [{ processingSpeed: 0 }, { surahNumber: 115 }, { audioUrls: 'invalid' }, { aspectRatio: 'square' }, { startAyah: 4, endAyah: 1 }, { reciterFolder: 'missing-reciter' }]) {
+  for (const body of [{ processingSpeed: 0 }, { surahNumber: 115 }, { audioUrls: 'invalid' }, { aspectRatio: 'square' }, { startAyah: 4, endAyah: 1 }, { reciterFolder: 'missing-reciter' },
+    { audioUrls: ['http://169.254.169.254/latest/meta-data'] }, { audioUrls: ['https://everyayah.com.evil.test/data/x/001001.mp3'] },
+    { videoUrl: 'http://localhost:3000/internal.mp4' }, { videoUrl: 'https://example.com/video.mp4' }]) {
     const result = await render(body); assert.equal(result.status, 400); assert.equal(result.output, undefined);
   }
-  const failed = await render({ videoDataUrl: dataUrl('background.mp4', 'video/mp4'), audioUrls: ['https://fixture/missing.mp3'] }, true);
+  const failed = await render({ videoDataUrl: dataUrl('background.mp4', 'video/mp4'), audioUrls: ['https://everyayah.com/data/Husary_128kbps/001003.mp3'] }, true);
   assert.equal(failed.status, 500); assert.equal(failed.output, undefined); assert.match(failed.result.error, /Recitation download failed/);
-  const mismatch = await render({ videoDataUrl: dataUrl('background.mp4', 'video/mp4'), audioUrls: ['https://fixture/1.mp3'], overlays: ['invalid', 'invalid'] });
+  const mismatch = await render({ videoDataUrl: dataUrl('background.mp4', 'video/mp4'), audioUrls: ['https://everyayah.com/data/Husary_128kbps/001001.mp3'], overlays: ['invalid', 'invalid'] });
   assert.equal(mismatch.status, 500); assert.match(mismatch.result.error, /overlays do not match/);
 });
