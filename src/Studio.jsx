@@ -3,6 +3,7 @@ import StudioView from './StudioView.jsx';
 import {apiFetch,apiOrigin,assetUrl,serviceConfig,saveServiceConfig} from './service.js';
 import {recordFullVideo,createAmbient,resolveNatureSound} from './browser-renderer.js';
 import { createVideoAsset, publicationTarget, publishingRequest } from './publication.js';
+import { connectYoutube, disconnectYoutube, googleClientId, loadGoogleSignIn, saveGoogleClientId, saveYoutubeProfile, uploadToYoutube, youtubeProfile } from './youtube-direct.js';
 
 // Reciter Metadata & Audio Folder Mapping
 const RECITERS_METADATA = {
@@ -927,7 +928,12 @@ export default function App() {
 
   // Sync active social sessions from backend server on mount
   useEffect(() => {
-    if(!serviceConfig().base){setServiceState({connected:false,error:''});setSocialChannels(previous=>previous.map(channel=>({...channel,connected:false})));return;}
+    if(!serviceConfig().base){
+      // No server: YouTube posts directly from this page; other platforms need the service.
+      setServiceState({connected:false,error:''});const profile=youtubeProfile();
+      setSocialChannels(previous=>previous.map(channel=>channel.id==='youtube'&&profile?{...channel,...profile,connected:true,verified:true,direct:true}:{...channel,connected:false,direct:false}));
+      if(profile&&googleClientId())loadGoogleSignIn().catch(()=>{});
+      return;}
     const controller=new AbortController();
     apiFetch('/api/auth/status',{signal:controller.signal})
       .then(async res => {const data=await res.json();if(!res.ok)throw new Error(data.error||'Publishing service could not connect.');return data;})
@@ -939,6 +945,7 @@ export default function App() {
             configuredProviders: data.configuredProviders || {}
           });
           setSocialChannels(prev => prev.map(ch => {
+            ch = { ...ch, direct: false };
             const s = data.sessions[ch.id];
             if (s && s.connected) {
               return {
@@ -2479,13 +2486,31 @@ export default function App() {
       channels: activeList.map(channel => ({ ...channel, status: 'preparing', stepMsg: 'Preparing video file' })) });
     const successfulChannels = [];
     try {
-      const needsFile=activeList.some(channel=>!asset.outcomes[publicationTarget(channel)]?.operationId);
+      const needsFile=activeList.some(channel=>!channel.direct&&!asset.outcomes[publicationTarget(channel)]?.operationId);
       const videoDataUrl = needsFile?await readVideoDataUrl(asset.file):null;
       for (const channel of activeList) {
         const target = publicationTarget(channel);
         const setChannel = patch => setPublishModalData(previous => previous && ({ ...previous,
           channels: previous.channels.map(item => item.id === channel.id ? { ...item, ...patch } : item) }));
         setChannel({ status: 'uploading', stepMsg: 'Uploading to ' + channel.name });
+        if (channel.direct) {
+          let outcome;
+          try {
+            const posted = await uploadToYoutube({ file: asset.file, metadata: asset.metadata, privacy: channel.privacy || 'public',
+              onProgress: percent => setChannel({ status: 'uploading', stepMsg: `Uploading to YouTube · ${percent}%` }) });
+            outcome = { status: 'uploaded', stepMsg: posted.message, postUrl: posted.postUrl, postId: posted.id };
+          } catch (error) {
+            outcome = { status: error.uncertain ? 'review' : 'failed', stepMsg: error.message, postUrl: 'https://studio.youtube.com/' };
+          }
+          asset.outcomes[target] = outcome;
+          if (completedAssetRef.current?.id === asset.id) updateAsset({ ...asset, outcomes: { ...asset.outcomes } });
+          setChannel(outcome);
+          if (outcome.status === 'uploaded') {
+            successfulChannels.push(channel);
+            setSocialChannels(previous => previous.map(item => item.id === channel.id ? { ...item, totalPosts: (Number(item.totalPosts) || 0) + 1, lastPostDate: 'Just now' } : item));
+          }
+          continue;
+        }
         const previousOperation=asset.outcomes[target]?.operationId;
         let { response, data } = previousOperation?await publishingRequest(`/api/publish/status/${encodeURIComponent(previousOperation)}`,{method:'GET'},25000):await publishingRequest(`/api/publish/${channel.id}`, {
           method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `${asset.id}:${target}` },
@@ -2532,6 +2557,12 @@ export default function App() {
   const handleToggleAutoPost = async (channelId) => {
     const channel = socialChannelsRef.current.find(item => item.id === channelId);
     if (!channel) return;
+    if (channel.direct) {
+      const profile = youtubeProfile();
+      if (profile) saveYoutubeProfile({ ...profile, autoPost: !channel.autoPost });
+      setSocialChannels(prev => prev.map(item => item.id === channelId ? { ...item, autoPost: !channel.autoPost } : item));
+      return;
+    }
     try {
       const response = await apiFetch('/api/auth/preferences', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ provider: channelId, autoPost: !channel.autoPost }) });
@@ -2541,6 +2572,11 @@ export default function App() {
   };
 
   const handleDisconnectSocial = async (channelId) => {
+    if (socialChannelsRef.current.find(item => item.id === channelId)?.direct) {
+      disconnectYoutube();
+      setSocialChannels(prev => prev.map(c => c.id === channelId ? { ...c, connected: false, verified: false, direct: false, autoPost: false } : c));
+      return;
+    }
     try {
       const response = await apiFetch('/api/auth/disconnect', {
         method: 'POST',
@@ -2607,6 +2643,21 @@ export default function App() {
     }
   };
 
+  // YouTube sign-in straight from this page (no publishing service needed).
+  const handleConnectYoutubeDirect = async (clientId, privacy) => {
+    setAuthError(''); setVerifyingToken(true);
+    try {
+      if (clientId !== undefined && clientId !== googleClientId()) saveGoogleClientId(clientId);
+      const profile = await connectYoutube(privacy);
+      setSocialChannels(prev => prev.map(c => c.id === 'youtube' ? { ...c, ...profile, connected: true, verified: true, direct: true } : c));
+      setConnectingChannel(null);
+      setShareStatus(`✓ YouTube connected: ${profile.accountName}. Videos upload straight from this page.`);
+      setTimeout(() => setShareStatus(''), 6000);
+    } catch (error) {
+      setAuthError(error.message || 'YouTube could not be connected.');
+    } finally { setVerifyingToken(false); }
+  };
+
   // Real 1-Click OAuth Popup Launcher
   const handleLaunchOAuthPopup = async (channelId) => {
     setAuthError('');
@@ -2662,7 +2713,7 @@ export default function App() {
  downloadUrl,aspectRatio,setAspectRatio,copiedField,shareStatus,setShareStatus,showAiModal,setShowAiModal,logoUrl,setLogoUrl,
  bgTab,setBgTab,pexelsApiKey,setPexelsApiKey,pexelsQuery,setPexelsQuery,pexelsResults,pexelsSearching,searchPexels,
  canvasRef,videoRef,audioRefA,audioRefB,isBackendRendering,handleBackendVideoRender,startPlaybackOrRecording,stopPlayback,filteredLessons,filteredPresets,captionsKit,
- copyToClipboard,publishToConnectedAccounts,handleToggleAutoPost,handleDisconnectSocial,handleVerifyAndSaveToken,handleLaunchOAuthPopup,handleNativeShare,
+ copyToClipboard,publishToConnectedAccounts,handleToggleAutoPost,handleDisconnectSocial,handleVerifyAndSaveToken,handleLaunchOAuthPopup,handleConnectYoutubeDirect,googleClientId,handleNativeShare,
  tikTokCreator,tikTokSettings,setTikTokSettings,renderEngine,setRenderEngine,natureDuration,setNatureDuration,natureSound,setNatureSound,serviceState,serviceVersion,saveServiceConfig,serviceConfig,completedAsset,updateAsset,isPublishing,inspectorTab,setInspectorTab,workspaceTab,setWorkspaceTab,mobileMenuOpen,setMobileMenuOpen,
  setLoadVersion,loadError,renderPhase,authForm,setAuthForm,QURAN_LESSONS,PRESET_VIDEOS,RECITERS_METADATA,buildPtpReflectionPackage,generateAIShortsScript}}/>;
 }

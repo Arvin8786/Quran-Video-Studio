@@ -14,6 +14,19 @@ Browser recording runs at playback speed and waits for the last verse and the re
 
 All 114 Surahs / 6,236 verses are bundled at build time from pinned `quran-json@3.1.2`, so Quran text does not depend on a live API. Recitation audio still needs access to EveryAyah; a connected service supplies a proxy fallback. **Studio gradient** needs no background download; uploaded videos also work when external scenery is unavailable. The build preserves the dataset's upstream license and attribution in `quran/LICENSE.txt` and `quran/ATTRIBUTION.md`. Text/English translation come from [The Noble Quran Encyclopedia](https://quranenc.com/), transliteration from [Tanzil](https://tanzil.net/trans/en.transliteration), distributed by [Quran JSON](https://github.com/risan/quran-json). Verse wording is unchanged.
 
+## Post to YouTube from GitHub Pages (no server)
+
+YouTube uploads run straight from the browser with Google sign-in, so the Pages site can publish without any server. Facebook, Instagram and TikTok need a server to post; on a phone, **Share video file** sends the finished video straight to their apps.
+
+One-time setup in [Google Cloud Console](https://console.cloud.google.com/):
+
+1. Create a project and enable **YouTube Data API v3** (APIs & Services → Library).
+2. **OAuth consent screen**: choose External and add your own Google account as a test user.
+3. **Credentials → Create credentials → OAuth client ID → Web application.** Under *Authorized JavaScript origins* add `https://arvin8786.github.io`. No redirect URL or client secret is needed.
+4. In the app, open **Connected channels → YouTube → Connect**, paste the client ID and choose **Sign in with Google**. Optionally save it as the public repository variable `VITE_GOOGLE_CLIENT_ID` so every build has it.
+
+Google sign-ins from the browser last about an hour; when you publish after that, Google shows a quick sign-in popup. There is no 70 MB limit for these uploads. Until your Google project passes YouTube's API audit, YouTube keeps videos uploaded through the API **private**; switch them to public in YouTube Studio, or apply for the audit.
+
 ## Connect a publishing service
 
 Direct publishing from the Pages interface needs a separate private Node service. Credentials must never be placed in frontend code, GitHub Pages files or `VITE_*` variables.

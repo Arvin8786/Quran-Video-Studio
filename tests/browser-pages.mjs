@@ -33,7 +33,7 @@ try{
  chrome=spawn(process.env.CHROME_BIN||'chromium',['--headless','--no-sandbox','--disable-gpu','--disable-dev-shm-usage','--autoplay-policy=no-user-gesture-required',`--user-data-dir=${temporary}/chrome`,`--remote-debugging-port=${debugPort}`,'about:blank'],{stdio:'ignore',detached:true});
  let tab;await until(async()=>{try{tab=(await(await fetch(`${debugOrigin}/json/list`)).json()).find(item=>item.type==='page');return !!tab;}catch{return false;}},'Chromium did not start');
  socket=new WebSocket(tab.webSocketDebuggerUrl);await new Promise(resolve=>socket.addEventListener('open',resolve,{once:true}));
- let id=0;const pending=new Map(),errors=[],audioUrls=new Set();
+ let id=0;const pending=new Map(),errors=[],audioUrls=new Set(),googleRequests=[];
  const send=(method,params={})=>new Promise((resolve,reject)=>{const messageId=++id;pending.set(messageId,{resolve,reject});socket.send(JSON.stringify({id:messageId,method,params}));});
  const fulfill=(requestId,body,mime)=>send('Fetch.fulfillRequest',{requestId,responseCode:200,responseHeaders:[{name:'Content-Type',value:mime},{name:'Access-Control-Allow-Origin',value:'*'}],body:Buffer.from(body).toString('base64')});
  socket.addEventListener('message',event=>{
@@ -41,8 +41,13 @@ try{
   if(message.id){const call=pending.get(message.id);pending.delete(message.id);message.error?call?.reject(new Error(JSON.stringify(message.error))):call?.resolve(message.result);}
   else if(message.method==='Runtime.exceptionThrown')errors.push(message.params.exceptionDetails.exception?.description||message.params.exceptionDetails.text);
   else if(message.method==='Fetch.requestPaused'){
-   const {requestId,request}=message.params;const url=new URL(request.url);let response;
-   if(url.hostname==='everyayah.com'){audioUrls.add(url.pathname);response=fulfill(requestId,audio,'audio/mpeg');}
+   const {requestId,request}=message.params;const url=new URL(request.url);let response;const header=name=>Object.entries(request.headers||{}).find(([key])=>key.toLowerCase()===name)?.[1];
+   if(request.method==='OPTIONS'&&['www.googleapis.com'].includes(url.hostname)){response=send('Fetch.fulfillRequest',{requestId,responseCode:204,responseHeaders:[{name:'Access-Control-Allow-Origin',value:'*'},{name:'Access-Control-Allow-Methods',value:'GET, POST, PUT'},{name:'Access-Control-Allow-Headers',value:'authorization, content-type, x-upload-content-type, x-upload-content-length'}],body:''});}
+   else if(url.hostname==='accounts.google.com'&&url.pathname==='/gsi/client'){googleRequests.push('signin-library');response=fulfill(requestId,"window.google={accounts:{oauth2:{initTokenClient:o=>({requestAccessToken:()=>setTimeout(()=>o.callback({access_token:'fixture-google-token',expires_in:3600}),20)}),hasGrantedAllScopes:()=>true,revoke:(t,c)=>c&&c()}}};",'application/javascript');}
+   else if(url.hostname==='www.googleapis.com'&&url.pathname==='/youtube/v3/channels'){googleRequests.push('channel:'+header('authorization'));response=fulfill(requestId,JSON.stringify({items:[{id:'UC-fixture',snippet:{title:'Fixture Channel',customUrl:'@fixture'}}]}),'application/json');}
+   else if(url.hostname==='www.googleapis.com'&&url.pathname==='/upload/youtube/v3/videos'&&url.searchParams.get('uploadType')==='resumable'){googleRequests.push('start:'+header('x-upload-content-length'));response=send('Fetch.fulfillRequest',{requestId,responseCode:200,responseHeaders:[{name:'Access-Control-Allow-Origin',value:'*'},{name:'Access-Control-Expose-Headers',value:'Location'},{name:'Location',value:'https://www.googleapis.com/upload/youtube/v3/videos?upload_id=fixture'}],body:''});}
+   else if(url.hostname==='www.googleapis.com'&&url.searchParams.get('upload_id')==='fixture'){googleRequests.push('upload:'+request.method);response=fulfill(requestId,JSON.stringify({id:'fixture-video',status:{privacyStatus:'public'}}),'application/json');}
+   else if(url.hostname==='everyayah.com'){audioUrls.add(url.pathname);response=fulfill(requestId,audio,'audio/mpeg');}
    else if(url.hostname==='fonts.googleapis.com')response=fulfill(requestId,'','text/css');
    else if(url.protocol==='https:')response=send('Fetch.failRequest',{requestId,errorReason:'BlockedByClient'});
    else response=send('Fetch.continueRequest',{requestId});
@@ -59,7 +64,9 @@ try{
  await send('Page.navigate',{url:origin+prefix});
  await until(()=>contains('Ready: THE REALITY OF DEATH'),'Bundled lesson did not load from project path');
  assert.equal(await evaluate("document.querySelector('[aria-label=\"Render engine\"]').value"),'browser');
- await click('Connect');await until(()=>contains('Set up your publishing server'),'An unconfigured channel did not lead to service setup');
+ await click('Connect');await until(()=>contains('Post to YouTube straight from this page'),'YouTube did not offer direct sign-in without a server');
+ await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape'});
+ await click('Publishing service settings');await until(()=>contains('Set up your publishing server'),'Service setup did not open');
  await setInput('Service URL','https://arvin8786.github.io/auth/callback');await click('Save connection');await until(()=>contains('This is a GitHub Pages address'),'A Pages callback was accepted as the publishing service');
  assert.equal(await evaluate("document.querySelector('a[href*=\"render.com/deploy\"]')?.textContent.includes('Deploy on Render')"),true);
  await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape'});
@@ -77,6 +84,13 @@ try{
  assert.deepEqual(await evaluate('window.__recordedVerses'),[1,2,3,4,5,6,7]);
  assert.equal(audioUrls.size>=7,true);assert.deepEqual(apiRequests,[],'The static build tried to use a nonexistent Pages API');
  assert.equal(await evaluate("!!document.querySelector('[aria-label=\"Download full video\"]')"),true);
+ // Publish to YouTube from the static page, with no server, through Google's browser sign-in.
+ await click('Connect');await until(()=>contains('Post to YouTube straight from this page'),'YouTube sign-in did not open');
+ await setInput('Google OAuth client ID','fixture-client.apps.googleusercontent.com');await click('Sign in with Google');
+ await until(()=>contains('YouTube connected: Fixture Channel'),'Direct YouTube sign-in did not connect');
+ await click('Publish video');await until(()=>contains('Uploaded to YouTube'),'Direct YouTube upload did not finish');
+ assert.deepEqual(googleRequests.filter(item=>!item.startsWith('signin')),['channel:Bearer fixture-google-token',`start:${fs.statSync(path.join(temporary,file)).size}`,'upload:PUT']);
+ await click('Done');assert.deepEqual(apiRequests,[],'Direct YouTube publishing used a server API');
  const screenshot=await send('Page.captureScreenshot',{format:'png'});fs.writeFileSync('/tmp/quran-pages-desktop.png',Buffer.from(screenshot.data,'base64'));
  // A cancelled recording must never expose a new, incomplete download.
  await click('Export video');await until(()=>contains('Recording verse'),'Second recording did not start');await click('Cancel export');
