@@ -14,13 +14,16 @@ export function serviceConfig() {
   let base = localStorage.getItem('proease_service_url') || build.VITE_API_BASE_URL || '';
   try {base=normalizeServiceUrl(base);} catch {base='';}
   const isStatic = build.VITE_STATIC === 'true' || location.hostname.endsWith('.github.io');
-  return { base: base.replace(/\/$/, '') || (isStatic ? '' : location.origin), key: sessionStorage.getItem('proease_service_key') || '', isStatic };
+  const remembered=localStorage.getItem('proease_service_key')||'';
+  return { base: base.replace(/\/$/, '') || (isStatic ? '' : location.origin), key: sessionStorage.getItem('proease_service_key') || remembered, remember: !!remembered || !sessionStorage.getItem('proease_service_key'), isStatic };
 }
-export function saveServiceConfig(base, key) {
+/** remember keeps the key on this device, so posting still works after the app or tab is reopened. */
+export function saveServiceConfig(base, key, remember=false) {
   const origin=normalizeServiceUrl(base);
   if (origin) localStorage.setItem('proease_service_url',origin);
   else localStorage.removeItem('proease_service_url');
   if (key) sessionStorage.setItem('proease_service_key',key); else sessionStorage.removeItem('proease_service_key');
+  if (key&&remember) localStorage.setItem('proease_service_key',key); else localStorage.removeItem('proease_service_key');
   window.dispatchEvent(new Event('proease-service-change'));
 }
 export function apiOrigin(){ return serviceConfig().base || ''; }

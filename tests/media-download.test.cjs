@@ -19,6 +19,7 @@ before(async () => {
     else if (req.url === '/loop') { res.writeHead(302, { location: '/loop' }); res.end(); }
     else if (req.url === '/slow') { res.writeHead(200); res.write('partial'); }
     else if (req.url === '/file') { res.end('complete-media-bytes'); }
+    else if (req.url === '/trickle') { res.writeHead(200); let sent = 0; const timer = setInterval(() => { res.write('chunk'); if (++sent === 6) { clearInterval(timer); res.end(); } }, 60); }
     else { res.writeHead(404); res.end('not found'); }
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); base = `http://127.0.0.1:${server.address().port}`;
@@ -41,4 +42,10 @@ test('Redirect loops, HTTP errors and stalled transfers reject and clean up part
 
 test('Filesystem stream errors reject safely instead of crashing the server', async () => {
   await assert.rejects(context.downloadFile(`${base}/file`, path.join(temporary, 'missing-directory', 'file'), 1000), /ENOENT/);
+});
+
+test('Transfers that keep sending data finish even when they take longer than the stall timeout', async () => {
+  const file = path.join(temporary, 'trickle.bin');
+  await context.downloadFile(`${base}/trickle`, file, 150);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'chunk'.repeat(6));
 });

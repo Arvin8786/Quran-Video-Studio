@@ -184,6 +184,19 @@ const oauthStates = new Map<string, { provider: string; expires: number; returnO
 const supportedProviders = ['youtube', 'facebook', 'instagram', 'tiktok'];
 const GRAPH_API = `https://graph.facebook.com/${process.env.META_GRAPH_VERSION || 'v24.0'}`;
 
+// Facebook Login returns a user token that expires in about an hour. A long-lived user token
+// (about 60 days) also makes the Page tokens fetched with it non-expiring, so posting keeps working.
+async function longLivedMetaToken(token: string): Promise<{ token: string; expiresIn?: number; exchanged: boolean }> {
+  if (!process.env.META_APP_ID || !process.env.META_APP_SECRET) return { token, exchanged: false };
+  try {
+    const params = new URLSearchParams({ grant_type: 'fb_exchange_token', client_id: process.env.META_APP_ID, client_secret: process.env.META_APP_SECRET, fb_exchange_token: token });
+    const response = await fetch(`${GRAPH_API}/oauth/access_token?${params}`, { signal: AbortSignal.timeout(20000) });
+    const data: any = await response.json();
+    if (response.ok && typeof data.access_token === 'string' && data.access_token) return { token: data.access_token, expiresIn: Number(data.expires_in) || undefined, exchanged: true };
+  } catch {}
+  return { token, exchanged: false };
+}
+
 app.get('/api/auth/status', (req: Request, res: Response) => {
   res.json({
     sessions: Object.fromEntries(Object.entries(readSessions()).map(([id, session]) => [id, publicSession(session)])),
@@ -276,12 +289,16 @@ app.get(['/auth/callback', '/auth/callback/'], async (req: Request, res: Respons
       const tokenRes = await fetch(`${GRAPH_API}/oauth/access_token?${params}`, { signal: AbortSignal.timeout(20000) });
       tokenData = await tokenRes.json();
       if (!tokenRes.ok || !tokenData.access_token) throw new Error(tokenData.error?.message || 'Facebook did not authorize this account.');
+      const longLived = await longLivedMetaToken(tokenData.access_token);
+      tokenData.access_token = longLived.token;
       const pagesRes = await fetch(`${GRAPH_API}/me/accounts?fields=id,name,access_token,instagram_business_account{id,username}`, { headers: { Authorization: `Bearer ${tokenData.access_token}` }, signal: AbortSignal.timeout(20000) });
       const pages: any = await pagesRes.json();
       if (!pagesRes.ok || !pages.data?.length) throw new Error(pages.error?.message || 'No Facebook Page is available. Connect a Page access token and Page ID directly.');
       if (pages.data.length > 1) throw new Error('Multiple Facebook Pages are available. Use Direct Token to select the Page access token and Page ID you want to post to.');
       const page = pages.data[0];
       tokenData.access_token = page.access_token;
+      // Page tokens fetched with a long-lived user token do not expire.
+      tokenData.expires_in = longLived.exchanged ? undefined : tokenData.expires_in;
       if(provider==='instagram'){if(!page.instagram_business_account?.id)throw new Error('This Page has no linked Instagram professional account. Connect its Instagram account ID directly.');channelId=page.instagram_business_account.id;accountName=page.instagram_business_account.username;handle=accountName;}else{channelId=page.id;accountName=page.name;handle=page.name;}
     }
     const sessions = readSessions();
@@ -303,7 +320,24 @@ app.post('/api/auth/save-token', async (req: Request, res: Response) => {
   if (!supportedProviders.includes(provider)) return res.status(400).json({ success: false, error: 'Choose YouTube, Facebook, Instagram or TikTok.' });
   if (typeof accessToken !== 'string' || accessToken.trim().length < 10) return res.status(400).json({ success: false, error: 'Enter a valid OAuth access token. API keys cannot authorize video uploads.' });
   try {
-    const token = accessToken.trim();
+    let token = accessToken.trim();
+    let expiresAt: number | undefined;
+    let lasting = false;
+    if (['facebook', 'instagram'].includes(provider)) {
+      const longLived = await longLivedMetaToken(token);
+      if (longLived.exchanged) {
+        token = longLived.token; lasting = true;
+        expiresAt = longLived.expiresIn ? Date.now() + longLived.expiresIn * 1000 : undefined;
+        if (provider === 'facebook' && channelId) {
+          // Prefer the Page's own token: it does not expire when obtained with a long-lived user token.
+          try {
+            const pageRes = await fetch(`${GRAPH_API}/${encodeURIComponent(channelId)}?fields=access_token`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20000) });
+            const page: any = await pageRes.json();
+            if (pageRes.ok && typeof page.access_token === 'string' && page.access_token) { token = page.access_token; expiresAt = undefined; }
+          } catch {}
+        }
+      }
+    }
     const endpoint = provider === 'youtube'
       ? 'https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true'
       : provider==='tiktok'?'https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name,avatar_url':`${GRAPH_API}/${encodeURIComponent(channelId || 'me')}?fields=${provider==='instagram'?'id,username':'id,name'}`;
@@ -314,14 +348,19 @@ app.post('/api/auth/save-token', async (req: Request, res: Response) => {
     if (['facebook','instagram'].includes(provider) && !channelId) return res.status(400).json({ success: false, error: 'Enter the Facebook Page ID along with its Page access token.' });
     const sessions = readSessions();
     const updatedSession: SocialSession = { ...sessions[provider], connected: true, verified: true, accessToken: token,
-      refreshToken: '', expiresAt: undefined, channelId: account.id, accountName: account.snippet?.title || account.username || account.name,
+      refreshToken: '', expiresAt, channelId: account.id, accountName: account.snippet?.title || account.username || account.name,
       handle: account.snippet?.customUrl || account.username || account.name || account.snippet?.title,
       avatar: account.snippet?.thumbnails?.default?.url || sessions[provider].avatar,
       privacy: ['public', 'private', 'unlisted'].includes(privacy) ? privacy : 'public',
       connectedAt: new Date().toISOString(), autoPost: true };
     sessions[provider] = updatedSession;
     writeSessions(sessions);
-    res.json({ success: true, message: `Verified and connected ${provider.toUpperCase()}.`, session: publicSession(updatedSession) });
+    const expiryNote = lasting ? '' : provider === 'youtube'
+      ? ' A pasted YouTube token cannot renew itself and usually stops working within an hour. Use OAuth sign-in for a connection that keeps working.'
+      : provider === 'tiktok'
+        ? ' A pasted TikTok token cannot renew itself and stops working within a day. Use OAuth sign-in for a connection that keeps working.'
+        : ' This token could not be exchanged for a long-lived one (set META_APP_ID and META_APP_SECRET on the service), so it may stop working within hours.';
+    res.json({ success: true, message: `Verified and connected ${provider.toUpperCase()}.${expiryNote}`, expiresAt, session: publicSession(updatedSession) });
   } catch {
     return res.status(502).json({ success: false, error: 'Could not reach the platform to verify this token. Nothing was saved. Please retry.' });
   }
@@ -412,7 +451,11 @@ function fetchStream(targetUrl: string, req: Request, res: Response, redirects =
   }
   try {
     const parsed = new URL(targetUrl);
-    const client = parsed.protocol === 'https:' ? https : http;
+    if (parsed.protocol !== 'https:' || !/^(?:www\.)?everyayah\.com$/i.test(parsed.hostname)) {
+      res.statusCode = 403;
+      return res.end('Only EveryAyah recitation audio can be proxied');
+    }
+    const client = https;
     const reqHeaders: Record<string, string> = {
       'User-Agent':
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -451,6 +494,9 @@ function fetchStream(targetUrl: string, req: Request, res: Response, redirects =
         remoteRes.pipe(res);
       }
     );
+    // Stop the upstream transfer if it stalls or the browser goes away.
+    remoteReq.setTimeout(20000, () => remoteReq.destroy(new Error('Recitation audio timed out')));
+    res.on('close', () => { if (!res.writableEnded) remoteReq.destroy(); });
     remoteReq.on('error', (err) => {
       if (!res.headersSent) {
         res.statusCode = 500;
@@ -478,9 +524,16 @@ async function downloadFile(url: string, dest: string, timeoutMs = 20000, redire
         return;
       }
       if (response.statusCode !== 200) { response.resume(); reject(new Error(`Media server returned ${response.statusCode}`)); return; }
+      // Restart the stall timer while bytes keep arriving, so large HD backgrounds can finish.
+      response.on('data', armTimer);
       pipeline(response, fs.createWriteStream(dest)).then(resolve, reject);
     });
-    const timer = setTimeout(() => request.destroy(new Error('Media download timed out. Please retry or upload a local background.')), timeoutMs);
+    let timer: ReturnType<typeof setTimeout>;
+    function armTimer() {
+      clearTimeout(timer);
+      timer = setTimeout(() => request.destroy(new Error('Media download timed out. Please retry or upload a local background.')), timeoutMs);
+    }
+    armTimer();
     request.on('error', reject);
     request.on('close', () => clearTimeout(timer));
   }).catch(error => { try { fs.rmSync(dest, { force: true }); } catch {} throw error; });
@@ -518,6 +571,18 @@ const RECITER_FOLDERS: Record<string, string> = {
   'ar.mahermuaiqly': 'Maher_AlMuaiqly_64kbps',
   'Maher_AlMuaiqly_64kbps': 'Maher_AlMuaiqly_64kbps'
 };
+// The service only fetches media it actually needs, so it cannot be used to reach internal hosts.
+const RECITATION_URL = /^https:\/\/(?:www\.)?everyayah\.com\/data\/[A-Za-z0-9_.-]+\/\d{6}\.mp3$/;
+// Nature soundtracks generated by FFmpeg: [lavfi source, extra filters].
+const NATURE_SOUNDS: Record<string, [string, string]> = {
+  ocean: ['anoisesrc=color=brown:amplitude=0.6:r=44100', "lowpass=f=600,volume='0.55+0.35*sin(2*PI*t/11)':eval=frame"],
+  rain: ['anoisesrc=color=pink:amplitude=0.35:r=44100', 'highpass=f=800,lowpass=f=7000'],
+  wind: ['anoisesrc=color=brown:amplitude=0.7:r=44100', "bandpass=f=450:width_type=o:w=1.5,volume='0.5+0.3*sin(2*PI*t/14)':eval=frame"],
+  drone: ['aevalsrc=sin(216*2*PI*t)*0.08+sin(324*2*PI*t)*0.04:s=44100', ''],
+  silent: ['anullsrc=r=44100:cl=stereo', ''],
+};
+const MAX_NATURE_SECONDS = 3600;
+const SCENERY_URL = /^https:\/\/(?:[a-z0-9-]+\.)*(?:pexels\.com|vimeo\.com|vimeocdn\.com)\/[^\s]*$/i;
 
 app.post('/api/render-video', async (req: Request, res: Response) => {
   const {
@@ -532,18 +597,29 @@ app.post('/api/render-video', async (req: Request, res: Response) => {
     processingSpeed = 1,
     aspectRatio = '16:9',
     title = 'QuranRecitation',
-    mode = 'quran'
+    mode = 'quran',
+    durationSeconds = 15,
+    natureSound = 'drone'
   } = req.body || {};
+  const natureDuration = Number(durationSeconds);
   if (!['quran', 'surah', 'lessons', 'reflection', 'nature'].includes(mode) || !['16:9', '9:16'].includes(aspectRatio)
       || !Number.isFinite(processingSpeed) || processingSpeed < 0.5 || processingSpeed > 2
       || !Array.isArray(audioUrls) || audioUrls.length > 286 || !Array.isArray(overlays) || overlays.length > 286
       || typeof title !== 'string' || title.length > 500
       || !Number.isInteger(surahNumber) || surahNumber < 1 || surahNumber > 114
-      || !Number.isInteger(startAyah) || !Number.isInteger(endAyah) || startAyah < 1 || endAyah < startAyah) {
+      || !Number.isInteger(startAyah) || !Number.isInteger(endAyah) || startAyah < 1 || endAyah < startAyah
+      || !Number.isInteger(natureDuration) || natureDuration < 5 || natureDuration > MAX_NATURE_SECONDS
+      || typeof natureSound !== 'string' || !Object.hasOwn(NATURE_SOUNDS, natureSound)) {
     return res.status(400).json({ error: 'Invalid video settings. Select a valid mode, Surah, verse range, aspect ratio and speed.' });
   }
   if (!['nature', 'reflection'].includes(mode) && !RECITER_FOLDERS[reciterFolder]) {
     return res.status(400).json({ error: 'Choose a supported reciter.' });
+  }
+  if (audioUrls.some((url: unknown) => typeof url !== 'string' || !RECITATION_URL.test(url))) {
+    return res.status(400).json({ error: 'Recitation audio must come from EveryAyah. Reload the verses and try again.' });
+  }
+  if (typeof videoUrl === 'string' && /^https?:/i.test(videoUrl) && !SCENERY_URL.test(videoUrl)) {
+    return res.status(400).json({ error: 'This background link is not supported. Choose a preset or Pexels video, or upload a file.' });
   }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proease-'));
@@ -592,6 +668,42 @@ app.post('/api/render-video', async (req: Request, res: Response) => {
     }
 
     if (!videoReady) throw new Error('No usable background video is available. Please upload a local video.');
+
+    if (mode === 'nature') {
+      // Long scenery videos: encode one background loop, then repeat it without re-encoding.
+      const width = aspectRatio === '9:16' ? 1080 : 1920;
+      const height = aspectRatio === '9:16' ? 1920 : 1080;
+      const bgProbe = await runMedia('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', bgPath]).catch(() => ({ stdout: '' }));
+      const bgDuration = Number(String(bgProbe.stdout).trim());
+      const loopLength = Math.min(natureDuration, Number.isFinite(bgDuration) && bgDuration >= 2 && bgDuration <= 120 ? bgDuration : 30);
+      const segmentPath = path.join(tmpDir, 'segment.mp4');
+      const segmentArgs = ['-y', '-stream_loop', '-1', '-i', bgPath];
+      let filter = `[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1,fps=30`;
+      const overlay = overlays[0];
+      if (overlay !== undefined) {
+        const match = typeof overlay === 'string' && overlay.match(/^data:image\/png;base64,([A-Za-z0-9+/=]+)$/);
+        if (!match) throw new Error('A text overlay could not be prepared. Please retry.');
+        const pngPath = path.join(tmpDir, 'overlay_0.png');
+        fs.writeFileSync(pngPath, Buffer.from(match[1], 'base64'));
+        segmentArgs.push('-loop', '1', '-i', pngPath);
+        filter += '[bg];[bg][1:v]overlay=0:0:format=auto';
+      }
+      await runMedia('ffmpeg', [...segmentArgs, '-filter_complex', `${filter}[v]`, '-map', '[v]', '-an', '-t', String(loopLength),
+        '-c:v', 'libx264', '-threads', '2', '-preset', 'veryfast', '-crf', '24', '-maxrate', '4M', '-bufsize', '8M', '-g', '60', '-pix_fmt', 'yuv420p', segmentPath]);
+      const soundPath = path.join(tmpDir, 'nature.m4a');
+      const [source, effects] = NATURE_SOUNDS[natureSound];
+      const fadeOut = Math.max(0, natureDuration - 2);
+      await runMedia('ffmpeg', ['-y', '-f', 'lavfi', '-i', source, '-t', String(natureDuration),
+        '-af', `${effects ? effects + ',' : ''}afade=t=in:d=2,afade=t=out:st=${fadeOut}:d=2`, '-ac', '2', '-c:a', 'aac', '-b:a', '160k', soundPath]);
+      const outputPath = path.join(tmpDir, 'output.mp4');
+      await runMedia('ffmpeg', ['-y', '-stream_loop', '-1', '-i', segmentPath, '-i', soundPath, '-map', '0:v:0', '-map', '1:a:0',
+        '-c', 'copy', '-t', String(natureDuration), '-movflags', '+faststart', outputPath]);
+      if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < 1000) throw new Error('Video generation failed to produce valid file');
+      const minutes = natureDuration >= 60 ? `${Math.round(natureDuration / 60)}min` : `${natureDuration}s`;
+      return res.download(outputPath, `ProEase_Nature_${minutes}_1080p.mp4`, () => {
+        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
+      });
+    }
 
     // 2. Resolve Audio Tracks
     const audioFiles: string[] = [];
@@ -729,9 +841,12 @@ app.options('/api/proxy', (_req: Request, res: Response) => {
 });
 
 app.get('/api/proxy', (req: Request, res: Response) => {
-  const queryUrl = req.query.url as string;
-  if (!queryUrl) {
+  const queryUrl = req.query.url;
+  if (typeof queryUrl !== 'string' || !queryUrl) {
     return res.status(400).end('Missing url param');
+  }
+  if (!RECITATION_URL.test(queryUrl)) {
+    return res.status(403).end('Only EveryAyah recitation audio can be proxied');
   }
   fetchStream(queryUrl, req, res);
 });
@@ -766,7 +881,8 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[ProEase Studio Server] Active on port ${PORT}`);
-    console.log(`[OAuth Callback URI] ${process.env.APP_URL ? process.env.APP_URL.replace(/\/+$/, '') + '/auth/callback' : `http://localhost:${PORT}/auth/callback`}`);
+    const publicUrl = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL;
+    console.log(`[OAuth Callback URI] ${publicUrl ? publicUrl.replace(/\/+$/, '') + '/auth/callback' : `http://localhost:${PORT}/auth/callback`}`);
   });
 }
 

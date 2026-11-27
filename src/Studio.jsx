@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import StudioView from './StudioView.jsx';
 import {apiFetch,apiOrigin,assetUrl,serviceConfig,saveServiceConfig} from './service.js';
-import {recordFullVideo} from './browser-renderer.js';
+import {recordFullVideo,createAmbient,resolveNatureSound} from './browser-renderer.js';
 import { createVideoAsset, publicationTarget, publishingRequest } from './publication.js';
+import { connectYoutube, disconnectYoutube, googleClientId, loadGoogleSignIn, saveGoogleClientId, saveYoutubeProfile, uploadToYoutube, youtubeProfile } from './youtube-direct.js';
 
 // Reciter Metadata & Audio Folder Mapping
 const RECITERS_METADATA = {
@@ -927,7 +928,12 @@ export default function App() {
 
   // Sync active social sessions from backend server on mount
   useEffect(() => {
-    if(!serviceConfig().base){setServiceState({connected:false,error:''});setSocialChannels(previous=>previous.map(channel=>({...channel,connected:false})));return;}
+    if(!serviceConfig().base){
+      // No server: YouTube posts directly from this page; other platforms need the service.
+      setServiceState({connected:false,error:''});const profile=youtubeProfile();
+      setSocialChannels(previous=>previous.map(channel=>channel.id==='youtube'&&profile?{...channel,...profile,connected:true,verified:true,direct:true}:{...channel,connected:false,direct:false}));
+      if(profile&&googleClientId())loadGoogleSignIn().catch(()=>{});
+      return;}
     const controller=new AbortController();
     apiFetch('/api/auth/status',{signal:controller.signal})
       .then(async res => {const data=await res.json();if(!res.ok)throw new Error(data.error||'Publishing service could not connect.');return data;})
@@ -939,6 +945,7 @@ export default function App() {
             configuredProviders: data.configuredProviders || {}
           });
           setSocialChannels(prev => prev.map(ch => {
+            ch = { ...ch, direct: false };
             const s = data.sessions[ch.id];
             if (s && s.connected) {
               return {
@@ -1040,6 +1047,10 @@ export default function App() {
   const [loadError, setLoadError] = useState('');
   const [renderPhase, setRenderPhase] = useState('');
   const [renderEngine,setRenderEngine]=useState('browser');
+  const [natureDuration,setNatureDuration]=useState(600);
+  const [natureSound,setNatureSound]=useState('auto');
+  // A nature video needs scenery: start from an ocean scene instead of the plain gradient.
+  useEffect(()=>{if(activeMode==='nature'&&selectedVideoUrl==='gradient'){const scene=PRESET_VIDEOS.find(video=>video.category==='sea');if(scene)setSelectedVideoUrl(scene.videoUrl);}},[activeMode]);
   useEffect(()=>{const changed=()=>setServiceVersion(value=>value+1);window.addEventListener('proease-service-change',changed);return()=>window.removeEventListener('proease-service-change',changed);},[]);
   const [authForm, setAuthForm] = useState({ token: '', pageId: '', privacy: 'public' });
   const [tikTokCreator,setTikTokCreator]=useState(null);
@@ -1234,41 +1245,17 @@ export default function App() {
     }
   };
 
-  // Gentle ambient drone generator for P.T.P Short Reflection mode
+  // Ambient soundtrack for previews: a calm tone for reflections, the chosen nature sound for scenery.
+  const sceneCategory = () => PRESET_VIDEOS.find(video => video.videoUrl === backgroundKindRef.current)?.category;
+  const currentAmbientSound = () => activeModeRef.current === 'nature' ? resolveNatureSound(natureSound, sceneCategory()) : 'drone';
   const playAmbientTone = () => {
     try {
       const ctx = audioCtxRef.current;
       if (!ctx || !masterGainRef.current) return null;
-      const osc1 = ctx.createOscillator();
-      const osc2 = ctx.createOscillator();
-      const oscGain = ctx.createGain();
-
-      osc1.type = 'sine';
-      osc1.frequency.setValueAtTime(216, ctx.currentTime);
-      osc2.type = 'triangle';
-      osc2.frequency.setValueAtTime(324, ctx.currentTime);
-
-      oscGain.gain.setValueAtTime(0.001, ctx.currentTime);
-      oscGain.gain.linearRampToValueAtTime(0.08, ctx.currentTime + 1.5);
-
-      osc1.connect(oscGain);
-      osc2.connect(oscGain);
-      oscGain.connect(masterGainRef.current);
-
-      osc1.start();
-      osc2.start();
-
-      return {
-        stop: () => {
-          try {
-            oscGain.gain.linearRampToValueAtTime(0.0001, ctx.currentTime + 1);
-            setTimeout(() => {
-              try { osc1.stop(); osc2.stop(); } catch(e){}
-            }, 1100);
-          } catch(e) {}
-        }
-      };
-    } catch(e) {
+      const ambient = createAmbient(ctx, masterGainRef.current, currentAmbientSound());
+      ambient.start(ctx.currentTime + 0.05);
+      return { stop: () => { ambient.stop(); setTimeout(() => ambient.disconnect(), 1500); } };
+    } catch (e) {
       return null;
     }
   };
@@ -1858,6 +1845,7 @@ export default function App() {
       if(selectedVideoUrl!=='gradient'&&videoRef.current.readyState<2)throw new Error('The background is not ready. Upload a video or choose Studio gradient in Scenery.');
       await document.fonts.ready;
       const blob=await recordFullVideo({canvas:canvasRef.current,context,verses,getBuffer:preloadAudioBuffer,speed:processingSpeed,signal:controller.signal,
+        duration:mode==='nature'?natureDuration:15,sound:currentAmbientSound(),
         onVerse:index=>{currentAyahIndexRef.current=index;setCurrentAyahIndex(index);setRenderPhase(`Recording verse ${index+1} of ${verses.length}`);},onProgress:setStatusText});
       const extension=blob.type.includes('mp4')?'mp4':'webm';const file=new File([blob],`ProEase_${mode}_${Date.now()}_Full_1080p.${extension}`,{type:blob.type});
       const url=URL.createObjectURL(blob);setDownloadUrl(url);setDownloadFilename(file.name);setIsProcessingComplete(true);
@@ -1897,7 +1885,7 @@ export default function App() {
     } else if (activeMode === 'reflection') {
       title = 'PathToPeace_Reflection';
     } else if (activeMode === 'nature') {
-      title = 'Peaceful_Nature_Loop';
+      title = `Peaceful_Nature_${natureDuration >= 60 ? `${Math.round(natureDuration / 60)}min` : `${natureDuration}s`}`;
     } else if (selectedSurah) {
       surahNumber = selectedSurah.number;
       title = `Surah_${selectedSurah.englishName.replace(/[^a-zA-Z0-9]/g, '')}`;
@@ -1947,7 +1935,9 @@ export default function App() {
           processingSpeed,
           aspectRatio,
           title,
-          mode: activeMode
+          mode: activeMode,
+          durationSeconds: activeMode === 'nature' ? natureDuration : 15,
+          natureSound: activeMode === 'nature' ? currentAmbientSound() : 'drone'
         })
       });
 
@@ -2496,13 +2486,31 @@ export default function App() {
       channels: activeList.map(channel => ({ ...channel, status: 'preparing', stepMsg: 'Preparing video file' })) });
     const successfulChannels = [];
     try {
-      const needsFile=activeList.some(channel=>!asset.outcomes[publicationTarget(channel)]?.operationId);
+      const needsFile=activeList.some(channel=>!channel.direct&&!asset.outcomes[publicationTarget(channel)]?.operationId);
       const videoDataUrl = needsFile?await readVideoDataUrl(asset.file):null;
       for (const channel of activeList) {
         const target = publicationTarget(channel);
         const setChannel = patch => setPublishModalData(previous => previous && ({ ...previous,
           channels: previous.channels.map(item => item.id === channel.id ? { ...item, ...patch } : item) }));
         setChannel({ status: 'uploading', stepMsg: 'Uploading to ' + channel.name });
+        if (channel.direct) {
+          let outcome;
+          try {
+            const posted = await uploadToYoutube({ file: asset.file, metadata: asset.metadata, privacy: channel.privacy || 'public',
+              onProgress: percent => setChannel({ status: 'uploading', stepMsg: `Uploading to YouTube · ${percent}%` }) });
+            outcome = { status: 'uploaded', stepMsg: posted.message, postUrl: posted.postUrl, postId: posted.id };
+          } catch (error) {
+            outcome = { status: error.uncertain ? 'review' : 'failed', stepMsg: error.message, postUrl: 'https://studio.youtube.com/' };
+          }
+          asset.outcomes[target] = outcome;
+          if (completedAssetRef.current?.id === asset.id) updateAsset({ ...asset, outcomes: { ...asset.outcomes } });
+          setChannel(outcome);
+          if (outcome.status === 'uploaded') {
+            successfulChannels.push(channel);
+            setSocialChannels(previous => previous.map(item => item.id === channel.id ? { ...item, totalPosts: (Number(item.totalPosts) || 0) + 1, lastPostDate: 'Just now' } : item));
+          }
+          continue;
+        }
         const previousOperation=asset.outcomes[target]?.operationId;
         let { response, data } = previousOperation?await publishingRequest(`/api/publish/status/${encodeURIComponent(previousOperation)}`,{method:'GET'},25000):await publishingRequest(`/api/publish/${channel.id}`, {
           method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `${asset.id}:${target}` },
@@ -2549,6 +2557,12 @@ export default function App() {
   const handleToggleAutoPost = async (channelId) => {
     const channel = socialChannelsRef.current.find(item => item.id === channelId);
     if (!channel) return;
+    if (channel.direct) {
+      const profile = youtubeProfile();
+      if (profile) saveYoutubeProfile({ ...profile, autoPost: !channel.autoPost });
+      setSocialChannels(prev => prev.map(item => item.id === channelId ? { ...item, autoPost: !channel.autoPost } : item));
+      return;
+    }
     try {
       const response = await apiFetch('/api/auth/preferences', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ provider: channelId, autoPost: !channel.autoPost }) });
@@ -2558,6 +2572,11 @@ export default function App() {
   };
 
   const handleDisconnectSocial = async (channelId) => {
+    if (socialChannelsRef.current.find(item => item.id === channelId)?.direct) {
+      disconnectYoutube();
+      setSocialChannels(prev => prev.map(c => c.id === channelId ? { ...c, connected: false, verified: false, direct: false, autoPost: false } : c));
+      return;
+    }
     try {
       const response = await apiFetch('/api/auth/disconnect', {
         method: 'POST',
@@ -2614,13 +2633,29 @@ export default function App() {
         autoPost: true
       } : c));
       setConnectingChannel(null);
-      setShareStatus(data.message || `✓ ${channelId.toUpperCase()} session authorized and saved permanently!`);
-      setTimeout(() => setShareStatus(''), 4500);
+      setShareStatus(data.message || `✓ ${channelId.toUpperCase()} connected.`);
+      // Leave expiry warnings on screen long enough to read.
+      setTimeout(() => setShareStatus(''), /stops? working/.test(data.message || '') ? 15000 : 4500);
     } catch (err) {
       setAuthError(err.message || 'Verification request failed');
     } finally {
       setVerifyingToken(false);
     }
+  };
+
+  // YouTube sign-in straight from this page (no publishing service needed).
+  const handleConnectYoutubeDirect = async (clientId, privacy) => {
+    setAuthError(''); setVerifyingToken(true);
+    try {
+      if (clientId !== undefined && clientId !== googleClientId()) saveGoogleClientId(clientId);
+      const profile = await connectYoutube(privacy);
+      setSocialChannels(prev => prev.map(c => c.id === 'youtube' ? { ...c, ...profile, connected: true, verified: true, direct: true } : c));
+      setConnectingChannel(null);
+      setShareStatus(`✓ YouTube connected: ${profile.accountName}. Videos upload straight from this page.`);
+      setTimeout(() => setShareStatus(''), 6000);
+    } catch (error) {
+      setAuthError(error.message || 'YouTube could not be connected.');
+    } finally { setVerifyingToken(false); }
   };
 
   // Real 1-Click OAuth Popup Launcher
@@ -2678,7 +2713,7 @@ export default function App() {
  downloadUrl,aspectRatio,setAspectRatio,copiedField,shareStatus,setShareStatus,showAiModal,setShowAiModal,logoUrl,setLogoUrl,
  bgTab,setBgTab,pexelsApiKey,setPexelsApiKey,pexelsQuery,setPexelsQuery,pexelsResults,pexelsSearching,searchPexels,
  canvasRef,videoRef,audioRefA,audioRefB,isBackendRendering,handleBackendVideoRender,startPlaybackOrRecording,stopPlayback,filteredLessons,filteredPresets,captionsKit,
- copyToClipboard,publishToConnectedAccounts,handleToggleAutoPost,handleDisconnectSocial,handleVerifyAndSaveToken,handleLaunchOAuthPopup,handleNativeShare,
- tikTokCreator,tikTokSettings,setTikTokSettings,renderEngine,setRenderEngine,serviceState,serviceVersion,saveServiceConfig,serviceConfig,completedAsset,updateAsset,isPublishing,inspectorTab,setInspectorTab,workspaceTab,setWorkspaceTab,mobileMenuOpen,setMobileMenuOpen,
+ copyToClipboard,publishToConnectedAccounts,handleToggleAutoPost,handleDisconnectSocial,handleVerifyAndSaveToken,handleLaunchOAuthPopup,handleConnectYoutubeDirect,googleClientId,handleNativeShare,
+ tikTokCreator,tikTokSettings,setTikTokSettings,renderEngine,setRenderEngine,natureDuration,setNatureDuration,natureSound,setNatureSound,serviceState,serviceVersion,saveServiceConfig,serviceConfig,completedAsset,updateAsset,isPublishing,inspectorTab,setInspectorTab,workspaceTab,setWorkspaceTab,mobileMenuOpen,setMobileMenuOpen,
  setLoadVersion,loadError,renderPhase,authForm,setAuthForm,QURAN_LESSONS,PRESET_VIDEOS,RECITERS_METADATA,buildPtpReflectionPackage,generateAIShortsScript}}/>;
 }

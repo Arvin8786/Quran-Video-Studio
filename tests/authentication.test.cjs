@@ -6,15 +6,15 @@ const { randomBytes, timingSafeEqual } = require('node:crypto');
 const { transformSync } = require('esbuild');
 const source = fs.readFileSync(new URL('../server.ts', `file://${__filename}`), 'utf8');
 const code = transformSync(source.slice(source.indexOf('function publicSession'), source.indexOf('// Disconnect Session Endpoint')), { loader: 'ts' }).code;
-function harness(fetchMock = () => { throw new Error('Network not expected'); }) {
+function harness(fetchMock = () => { throw new Error('Network not expected'); }, env = {}) {
   const routes = new Map(), saves = [];
   const sessions = { youtube: { id: 'youtube', connected: false, accessToken: 'private-access', refreshToken: 'private-refresh' }, facebook: { id: 'facebook', connected: false } };
   vm.runInNewContext(code, {
     app: { get(path, handler) { routes.set(Array.isArray(path) ? path[0] : path, handler); }, post(path, handler) { routes.set(path, handler); } },
     randomBytes, timingSafeEqual, Buffer, URL, URLSearchParams, AbortSignal, Date,
-    process: { env: { GOOGLE_CLIENT_ID: 'client-id', GOOGLE_CLIENT_SECRET: 'client-secret' } },
+    process: { env: { GOOGLE_CLIENT_ID: 'client-id', GOOGLE_CLIENT_SECRET: 'client-secret', ...env } },
     getCallbackUrl: () => 'https://studio.example/auth/callback', fetch: fetchMock,
-    readSessions: () => sessions, writeSessions: sessions => saves.push(sessions),
+    readSessions: () => structuredClone(sessions), writeSessions: value => { saves.push(value); Object.assign(sessions, structuredClone(value)); }, structuredClone,
   });
   async function call(path, req = {}) {
     let status = 200, result, cookie, redirect;
@@ -101,4 +101,46 @@ test('Auto-Post preference is saved for connected accounts and rejected for disc
   const status = await h.call('/api/auth/status');
   assert.equal(status.result.sessions.youtube.autoPost, false);
   assert.equal((await h.call('/api/auth/preferences', { body: { provider: 'youtube', autoPost: 'false' } })).status, 400);
+});
+
+const META = { META_APP_ID: 'meta-app', META_APP_SECRET: 'meta-secret' };
+function metaFetch(calls) {
+  return async (url, options = {}) => {
+    const address = new URL(url), auth = options.headers?.Authorization || '';
+    calls.push({ path: address.pathname, grant: address.searchParams.get('grant_type'), auth });
+    if (address.pathname.endsWith('/oauth/access_token') && address.searchParams.get('grant_type') === 'fb_exchange_token') return Response.json({ access_token: 'long-user-token', expires_in: 5184000 });
+    if (address.pathname.endsWith('/oauth/access_token')) return Response.json({ access_token: 'short-user-token', expires_in: 3600 });
+    if (address.pathname.endsWith('/me/accounts')) return Response.json({ data: [{ id: 'page1', name: 'Quran Page', access_token: auth === 'Bearer long-user-token' ? 'lasting-page-token' : 'hour-page-token' }] });
+    if (address.pathname.endsWith('/page1') && address.searchParams.get('fields') === 'access_token') return Response.json({ id: 'page1', access_token: 'lasting-page-token' });
+    if (address.pathname.endsWith('/page1')) return Response.json({ id: 'page1', name: 'Quran Page' });
+    throw new Error(`Unexpected request ${url}`);
+  };
+}
+
+test('Facebook sign-in stores a Page token that does not expire after an hour', async () => {
+  const calls = [], h = harness(metaFetch(calls), META);
+  const init = await h.call('/api/auth/:provider/url', { params: { provider: 'facebook' } });
+  const state = new URL(init.result.url).pathname.split('/').at(-1);
+  const start = await h.call('/auth/start/:state', { params: { state } });
+  const result = await h.call('/auth/callback', { query: { state, code: 'code' }, headers: { cookie: `proease_oauth_state=${start.cookie}` } });
+  assert.equal(result.status, 200, result.result);
+  const saved = h.saves.at(-1).facebook;
+  assert.equal(saved.accessToken, 'lasting-page-token');
+  assert.equal(saved.expiresAt, undefined);
+  assert.ok(calls.some(call => call.grant === 'fb_exchange_token'));
+});
+
+test('A pasted Facebook token is exchanged for the Page token that keeps working', async () => {
+  const calls = [], h = harness(metaFetch(calls), META);
+  const { result } = await h.call('/api/auth/save-token', { body: { provider: 'facebook', accessToken: 'short-user-token', channelId: 'page1' } });
+  assert.equal(result.success, true, result.error);
+  assert.equal(h.saves.at(-1).facebook.accessToken, 'lasting-page-token');
+  assert.doesNotMatch(result.message, /stops? working/);
+  assert.equal(result.session.accessToken, undefined);
+});
+
+test('A pasted YouTube token warns that it will stop working', async () => {
+  const h = harness(() => Response.json({ items: [{ id: 'channel123', snippet: { title: 'Real channel' } }] }));
+  const { result } = await h.call('/api/auth/save-token', { body: { provider: 'youtube', accessToken: 'a-real-token-123' } });
+  assert.match(result.message, /stops working within an hour.*OAuth sign-in/);
 });

@@ -14,6 +14,19 @@ Browser recording runs at playback speed and waits for the last verse and the re
 
 All 114 Surahs / 6,236 verses are bundled at build time from pinned `quran-json@3.1.2`, so Quran text does not depend on a live API. Recitation audio still needs access to EveryAyah; a connected service supplies a proxy fallback. **Studio gradient** needs no background download; uploaded videos also work when external scenery is unavailable. The build preserves the dataset's upstream license and attribution in `quran/LICENSE.txt` and `quran/ATTRIBUTION.md`. Text/English translation come from [The Noble Quran Encyclopedia](https://quranenc.com/), transliteration from [Tanzil](https://tanzil.net/trans/en.transliteration), distributed by [Quran JSON](https://github.com/risan/quran-json). Verse wording is unchanged.
 
+## Post to YouTube from GitHub Pages (no server)
+
+YouTube uploads run straight from the browser with Google sign-in, so the Pages site can publish without any server. Facebook, Instagram and TikTok need a server to post; on a phone, **Share video file** sends the finished video straight to their apps.
+
+One-time setup in [Google Cloud Console](https://console.cloud.google.com/):
+
+1. Create a project and enable **YouTube Data API v3** (APIs & Services → Library).
+2. **OAuth consent screen**: choose External and add your own Google account as a test user.
+3. **Credentials → Create credentials → OAuth client ID → Web application.** Under *Authorized JavaScript origins* add `https://arvin8786.github.io`. No redirect URL or client secret is needed.
+4. In the app, open **Connected channels → YouTube → Connect**, paste the client ID and choose **Sign in with Google**. Optionally save it as the public repository variable `VITE_GOOGLE_CLIENT_ID` so every build has it.
+
+Google sign-ins from the browser last about an hour; when you publish after that, Google shows a quick sign-in popup. There is no 70 MB limit for these uploads. Until your Google project passes YouTube's API audit, YouTube keeps videos uploaded through the API **private**; switch them to public in YouTube Studio, or apply for the audit.
+
 ## Connect a publishing service
 
 Direct publishing from the Pages interface needs a separate private Node service. Credentials must never be placed in frontend code, GitHub Pages files or `VITE_*` variables.
@@ -43,7 +56,7 @@ Completed videos retain their own captions when you change the editor. Retries s
 
 Social uploads support files up to **70 MB**. Larger completed videos can still be downloaded in full and uploaded through the platform's own interface. Publication operation IDs and duplicate-request protection last 24 hours in the running process; this is not a durable queue. After a service restart or an expired operation, check your account before repeating a post.
 
-This is a single-owner studio. All service account APIs and publishing operations require the private Studio key in production. CORS permits only the configured origins. Sessions/history use private files in `.data/` or `PROEASE_DATA_DIR`; neither is committed. Keep the service and key private to people allowed to post to your accounts.
+This is a single-owner studio. All service account APIs and publishing operations require the private Studio key in production. CORS permits only the configured origins. Sessions/history use private files in `.data/` or `PROEASE_DATA_DIR`; neither is committed. Keep the service and key private to people allowed to post to your accounts. The service only downloads recitation audio from EveryAyah and scenery from Pexels/Vimeo links; other remote URLs are refused, so it cannot be used as an open proxy.
 
 ## Local development and validation
 
@@ -66,4 +79,16 @@ npm run test:pages    # Static project-path build and real complete browser reco
 
 Browser checks require Chromium on `PATH` or `CHROME_BIN` pointing to Chrome. They use local media and simulated provider responses; they never log in or publish to real accounts. Live platform publication remains an account-configuration check after deployment.
 
-Reflection voiceover uses browser speech synthesis for preview only; exported reflection/nature audio is a 15-second ambient track. It does not silently claim to include synthesized narration.
+## Nature scenery videos
+
+Choose **Nature Loop**, then pick a length (15 seconds to 1 hour), a soundtrack (ocean, rain, wind, calm tone, none, or matched to the scene) and a scene. Browser export records in real time, so a 30-minute video takes 30 minutes with the tab open; long browser recordings use a lower bitrate to fit in memory. The processing service renders long videos in a few minutes: it encodes one loop of the scene and repeats it without re-encoding. Videos over 70 MB download in full; upload those through the platform's own site.
+
+Reflection voiceover uses browser speech synthesis for preview only; exported reflections use a 15-second calm tone. It does not silently claim to include synthesized narration.
+
+## Keeping accounts connected
+
+- Use **OAuth sign-in** rather than pasted tokens where you can. Pasted YouTube tokens stop working within about an hour and TikTok tokens within a day, because they cannot renew themselves. OAuth sign-in stores a refresh token and renews automatically.
+- Facebook and Instagram tokens are exchanged for long-lived ones when `META_APP_ID` and `META_APP_SECRET` are set, so Page posting keeps working.
+- If your Google OAuth app is in **Testing** status, Google expires its refresh tokens after 7 days. Publish the app (OAuth consent screen → Publish app) to keep YouTube connected.
+- Tick **Remember on this device** in the publishing service settings, or the access key is forgotten when the tab or app closes.
+- Keep `PROEASE_DATA_DIR` on persistent storage (the Render blueprint's `/data` disk). Without it, connected accounts are lost whenever the service restarts or redeploys.
