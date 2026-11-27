@@ -66,4 +66,16 @@ npm run test:pages    # Static project-path build and real complete browser reco
 
 Browser checks require Chromium on `PATH` or `CHROME_BIN` pointing to Chrome. They use local media and simulated provider responses; they never log in or publish to real accounts. Live platform publication remains an account-configuration check after deployment.
 
-Reflection voiceover uses browser speech synthesis for preview only; exported reflection/nature audio is a 15-second ambient track. It does not silently claim to include synthesized narration.
+## Nature scenery videos
+
+Choose **Nature Loop**, then pick a length (15 seconds to 1 hour), a soundtrack (ocean, rain, wind, calm tone, none, or matched to the scene) and a scene. Browser export records in real time, so a 30-minute video takes 30 minutes with the tab open; long browser recordings use a lower bitrate to fit in memory. The processing service renders long videos in a few minutes: it encodes one loop of the scene and repeats it without re-encoding. Videos over 70 MB download in full; upload those through the platform's own site.
+
+Reflection voiceover uses browser speech synthesis for preview only; exported reflections use a 15-second calm tone. It does not silently claim to include synthesized narration.
+
+## Keeping accounts connected
+
+- Use **OAuth sign-in** rather than pasted tokens where you can. Pasted YouTube tokens stop working within about an hour and TikTok tokens within a day, because they cannot renew themselves. OAuth sign-in stores a refresh token and renews automatically.
+- Facebook and Instagram tokens are exchanged for long-lived ones when `META_APP_ID` and `META_APP_SECRET` are set, so Page posting keeps working.
+- If your Google OAuth app is in **Testing** status, Google expires its refresh tokens after 7 days. Publish the app (OAuth consent screen → Publish app) to keep YouTube connected.
+- Tick **Remember on this device** in the publishing service settings, or the access key is forgotten when the tab or app closes.
+- Keep `PROEASE_DATA_DIR` on persistent storage (the Render blueprint's `/data` disk). Without it, connected accounts are lost whenever the service restarts or redeploys.

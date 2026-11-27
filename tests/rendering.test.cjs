@@ -84,3 +84,29 @@ test('Invalid render settings and unavailable recitation never produce a mislead
   const mismatch = await render({ videoDataUrl: dataUrl('background.mp4', 'video/mp4'), audioUrls: ['https://everyayah.com/data/Husary_128kbps/001001.mp3'], overlays: ['invalid', 'invalid'] });
   assert.equal(mismatch.status, 500); assert.match(mismatch.result.error, /overlays do not match/);
 });
+
+test('Long nature videos keep the chosen length, scenery and soundtrack without re-encoding every minute', { timeout: 60000 }, async () => {
+  fixtures();
+  const started = Date.now();
+  const result = await render({ mode: 'nature', aspectRatio: '16:9', durationSeconds: 180, natureSound: 'ocean',
+    videoDataUrl: dataUrl('background.mp4', 'video/mp4'), overlays: [dataUrl('red.png', 'image/png')] });
+  assert.equal(result.status, 200, JSON.stringify(result.result));
+  const file = path.join(fixtureDir, 'nature.mp4'); fs.writeFileSync(file, result.output);
+  const probe = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', file]));
+  assert.ok(Math.abs(Number(probe.format.duration) - 180) < 1, `Nature video should last 3 minutes: ${probe.format.duration}s`);
+  assert.equal(probe.streams.find(stream => stream.codec_type === 'video').width, 1920);
+  assert.equal(probe.streams.find(stream => stream.codec_type === 'audio').codec_name, 'aac');
+  const late = pixel(file, 170, 100, 100), logo = pixel(file, 170, 16, 16);
+  assert.ok(late[2] > 200 && late[0] < 30, `Scenery should still play near the end: ${late}`);
+  assert.ok(logo[0] > 200 && logo[1] < 30, `Overlay should stay on screen: ${logo}`);
+  const levels = require('node:child_process').spawnSync('ffmpeg', ['-hide_banner', '-ss', '60', '-t', '5', '-i', file, '-af', 'volumedetect', '-f', 'null', '-'], { encoding: 'utf8' }).stderr;
+  const mean = Number(levels.match(/mean_volume: (-?[\d.]+) dB/)?.[1]);
+  assert.ok(mean > -45, `Ocean soundtrack should be audible: ${mean} dB`);
+  assert.ok(Date.now() - started < 45000, 'Nature render took too long');
+});
+
+test('Nature settings outside the supported range are refused', async () => {
+  for (const body of [{ mode: 'nature', durationSeconds: 3601 }, { mode: 'nature', durationSeconds: 2 }, { mode: 'nature', natureSound: 'thunder' }, { mode: 'nature', natureSound: 'constructor' }]) {
+    const result = await render(body); assert.equal(result.status, 400); assert.equal(result.output, undefined);
+  }
+});

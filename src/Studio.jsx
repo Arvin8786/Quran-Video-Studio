@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import StudioView from './StudioView.jsx';
 import {apiFetch,apiOrigin,assetUrl,serviceConfig,saveServiceConfig} from './service.js';
-import {recordFullVideo} from './browser-renderer.js';
+import {recordFullVideo,createAmbient,resolveNatureSound} from './browser-renderer.js';
 import { createVideoAsset, publicationTarget, publishingRequest } from './publication.js';
 
 // Reciter Metadata & Audio Folder Mapping
@@ -1040,6 +1040,10 @@ export default function App() {
   const [loadError, setLoadError] = useState('');
   const [renderPhase, setRenderPhase] = useState('');
   const [renderEngine,setRenderEngine]=useState('browser');
+  const [natureDuration,setNatureDuration]=useState(600);
+  const [natureSound,setNatureSound]=useState('auto');
+  // A nature video needs scenery: start from an ocean scene instead of the plain gradient.
+  useEffect(()=>{if(activeMode==='nature'&&selectedVideoUrl==='gradient'){const scene=PRESET_VIDEOS.find(video=>video.category==='sea');if(scene)setSelectedVideoUrl(scene.videoUrl);}},[activeMode]);
   useEffect(()=>{const changed=()=>setServiceVersion(value=>value+1);window.addEventListener('proease-service-change',changed);return()=>window.removeEventListener('proease-service-change',changed);},[]);
   const [authForm, setAuthForm] = useState({ token: '', pageId: '', privacy: 'public' });
   const [tikTokCreator,setTikTokCreator]=useState(null);
@@ -1234,41 +1238,17 @@ export default function App() {
     }
   };
 
-  // Gentle ambient drone generator for P.T.P Short Reflection mode
+  // Ambient soundtrack for previews: a calm tone for reflections, the chosen nature sound for scenery.
+  const sceneCategory = () => PRESET_VIDEOS.find(video => video.videoUrl === backgroundKindRef.current)?.category;
+  const currentAmbientSound = () => activeModeRef.current === 'nature' ? resolveNatureSound(natureSound, sceneCategory()) : 'drone';
   const playAmbientTone = () => {
     try {
       const ctx = audioCtxRef.current;
       if (!ctx || !masterGainRef.current) return null;
-      const osc1 = ctx.createOscillator();
-      const osc2 = ctx.createOscillator();
-      const oscGain = ctx.createGain();
-
-      osc1.type = 'sine';
-      osc1.frequency.setValueAtTime(216, ctx.currentTime);
-      osc2.type = 'triangle';
-      osc2.frequency.setValueAtTime(324, ctx.currentTime);
-
-      oscGain.gain.setValueAtTime(0.001, ctx.currentTime);
-      oscGain.gain.linearRampToValueAtTime(0.08, ctx.currentTime + 1.5);
-
-      osc1.connect(oscGain);
-      osc2.connect(oscGain);
-      oscGain.connect(masterGainRef.current);
-
-      osc1.start();
-      osc2.start();
-
-      return {
-        stop: () => {
-          try {
-            oscGain.gain.linearRampToValueAtTime(0.0001, ctx.currentTime + 1);
-            setTimeout(() => {
-              try { osc1.stop(); osc2.stop(); } catch(e){}
-            }, 1100);
-          } catch(e) {}
-        }
-      };
-    } catch(e) {
+      const ambient = createAmbient(ctx, masterGainRef.current, currentAmbientSound());
+      ambient.start(ctx.currentTime + 0.05);
+      return { stop: () => { ambient.stop(); setTimeout(() => ambient.disconnect(), 1500); } };
+    } catch (e) {
       return null;
     }
   };
@@ -1858,6 +1838,7 @@ export default function App() {
       if(selectedVideoUrl!=='gradient'&&videoRef.current.readyState<2)throw new Error('The background is not ready. Upload a video or choose Studio gradient in Scenery.');
       await document.fonts.ready;
       const blob=await recordFullVideo({canvas:canvasRef.current,context,verses,getBuffer:preloadAudioBuffer,speed:processingSpeed,signal:controller.signal,
+        duration:mode==='nature'?natureDuration:15,sound:currentAmbientSound(),
         onVerse:index=>{currentAyahIndexRef.current=index;setCurrentAyahIndex(index);setRenderPhase(`Recording verse ${index+1} of ${verses.length}`);},onProgress:setStatusText});
       const extension=blob.type.includes('mp4')?'mp4':'webm';const file=new File([blob],`ProEase_${mode}_${Date.now()}_Full_1080p.${extension}`,{type:blob.type});
       const url=URL.createObjectURL(blob);setDownloadUrl(url);setDownloadFilename(file.name);setIsProcessingComplete(true);
@@ -1897,7 +1878,7 @@ export default function App() {
     } else if (activeMode === 'reflection') {
       title = 'PathToPeace_Reflection';
     } else if (activeMode === 'nature') {
-      title = 'Peaceful_Nature_Loop';
+      title = `Peaceful_Nature_${natureDuration >= 60 ? `${Math.round(natureDuration / 60)}min` : `${natureDuration}s`}`;
     } else if (selectedSurah) {
       surahNumber = selectedSurah.number;
       title = `Surah_${selectedSurah.englishName.replace(/[^a-zA-Z0-9]/g, '')}`;
@@ -1947,7 +1928,9 @@ export default function App() {
           processingSpeed,
           aspectRatio,
           title,
-          mode: activeMode
+          mode: activeMode,
+          durationSeconds: activeMode === 'nature' ? natureDuration : 15,
+          natureSound: activeMode === 'nature' ? currentAmbientSound() : 'drone'
         })
       });
 
@@ -2614,8 +2597,9 @@ export default function App() {
         autoPost: true
       } : c));
       setConnectingChannel(null);
-      setShareStatus(data.message || `✓ ${channelId.toUpperCase()} session authorized and saved permanently!`);
-      setTimeout(() => setShareStatus(''), 4500);
+      setShareStatus(data.message || `✓ ${channelId.toUpperCase()} connected.`);
+      // Leave expiry warnings on screen long enough to read.
+      setTimeout(() => setShareStatus(''), /stops? working/.test(data.message || '') ? 15000 : 4500);
     } catch (err) {
       setAuthError(err.message || 'Verification request failed');
     } finally {
@@ -2679,6 +2663,6 @@ export default function App() {
  bgTab,setBgTab,pexelsApiKey,setPexelsApiKey,pexelsQuery,setPexelsQuery,pexelsResults,pexelsSearching,searchPexels,
  canvasRef,videoRef,audioRefA,audioRefB,isBackendRendering,handleBackendVideoRender,startPlaybackOrRecording,stopPlayback,filteredLessons,filteredPresets,captionsKit,
  copyToClipboard,publishToConnectedAccounts,handleToggleAutoPost,handleDisconnectSocial,handleVerifyAndSaveToken,handleLaunchOAuthPopup,handleNativeShare,
- tikTokCreator,tikTokSettings,setTikTokSettings,renderEngine,setRenderEngine,serviceState,serviceVersion,saveServiceConfig,serviceConfig,completedAsset,updateAsset,isPublishing,inspectorTab,setInspectorTab,workspaceTab,setWorkspaceTab,mobileMenuOpen,setMobileMenuOpen,
+ tikTokCreator,tikTokSettings,setTikTokSettings,renderEngine,setRenderEngine,natureDuration,setNatureDuration,natureSound,setNatureSound,serviceState,serviceVersion,saveServiceConfig,serviceConfig,completedAsset,updateAsset,isPublishing,inspectorTab,setInspectorTab,workspaceTab,setWorkspaceTab,mobileMenuOpen,setMobileMenuOpen,
  setLoadVersion,loadError,renderPhase,authForm,setAuthForm,QURAN_LESSONS,PRESET_VIDEOS,RECITERS_METADATA,buildPtpReflectionPackage,generateAIShortsScript}}/>;
 }

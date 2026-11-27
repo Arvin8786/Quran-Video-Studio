@@ -17,3 +17,15 @@ test('Invalid service input never changes a previously valid connection or its k
  assert.equal(serviceConfig().base,'https://studio.example');assert.equal(serviceConfig().key,'fixture-key');
  localStorage.setItem('proease_service_url','https://owner.github.io');assert.equal(serviceConfig().base,'');
 });
+test('A remembered access key survives closing the app; an unremembered one does not',async()=>{
+ const {saveServiceConfig,serviceConfig}=await service;
+ const storage=()=>{const values=new Map();return{getItem:key=>values.get(key)||null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)};};
+ global.localStorage=storage();global.sessionStorage=storage();global.location={hostname:'owner.github.io',origin:'https://owner.github.io'};global.window={dispatchEvent(){}};
+ saveServiceConfig('https://studio.example','device-key',true);
+ global.sessionStorage=storage();
+ assert.equal(serviceConfig().key,'device-key');assert.equal(serviceConfig().remember,true);
+ saveServiceConfig('https://studio.example','tab-key',false);
+ assert.equal(sessionStorage.getItem('proease_service_key'),'tab-key');
+ global.sessionStorage=storage();
+ assert.equal(serviceConfig().key,'');
+});
